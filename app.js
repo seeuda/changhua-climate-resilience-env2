@@ -488,6 +488,7 @@ function applyCalibration() {
                     transformCoords(f.geometry.coordinates, lonShift, latShift, scaleFactor);
                 }
             });
+            annotateWraFeatureBBoxes(activeWraData);
         }
     }
 
@@ -650,12 +651,83 @@ function distancePointToRingMeters(x, y, ring) {
     return minDistance;
 }
 
-function distancePointToMultiPolygonMeters(x, y, coordinates) {
+function expandBBoxByMeters(bbox, meters) {
+    const centerLat = (bbox.minY + bbox.maxY) / 2;
+    const latDelta = meters / 111320;
+    const lngDelta = meters / (111320 * Math.cos(centerLat * Math.PI / 180));
+    return {
+        minX: bbox.minX - lngDelta,
+        minY: bbox.minY - latDelta,
+        maxX: bbox.maxX + lngDelta,
+        maxY: bbox.maxY + latDelta
+    };
+}
+
+function getCoordinateBBox(coordinates, bbox = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }) {
+    if (typeof coordinates?.[0] === 'number') {
+        const [x, y] = coordinates;
+        bbox.minX = Math.min(bbox.minX, x);
+        bbox.minY = Math.min(bbox.minY, y);
+        bbox.maxX = Math.max(bbox.maxX, x);
+        bbox.maxY = Math.max(bbox.maxY, y);
+        return bbox;
+    }
+
+    (coordinates || []).forEach(child => getCoordinateBBox(child, bbox));
+    return bbox;
+}
+
+function collectPolygonRings(coordinates) {
+    return (coordinates || []).flatMap(polygon => polygon || []);
+}
+
+function isPointInPolygonRings(x, y, polygon) {
+    return isPointInMultiPolygon(x, y, [polygon]);
+}
+
+function annotateWraFeatureBBoxes(geojson) {
+    (geojson?.features || []).forEach(feature => {
+        if (!feature.geometry?.coordinates) return;
+
+        const geometry = feature.geometry;
+        const coordinates = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+        if (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon') return;
+
+        const bbox = getCoordinateBBox(coordinates);
+        feature._bbox = bbox;
+        feature._proximityBBox = expandBBoxByMeters(bbox, WRA_PROXIMITY_RADIUS_METERS);
+        feature._polygons = (coordinates || []).map(polygon => ({
+            polygon,
+            bbox: getCoordinateBBox(polygon)
+        }));
+        feature._rings = collectPolygonRings(coordinates).map(ring => {
+            const ringBBox = getCoordinateBBox(ring);
+            return {
+                ring,
+                bbox: ringBBox,
+                proximityBBox: expandBBoxByMeters(ringBBox, WRA_PROXIMITY_RADIUS_METERS)
+            };
+        });
+    });
+}
+
+function isPointInBBox(x, y, bbox) {
+    return Boolean(bbox) && x >= bbox.minX && x <= bbox.maxX && y >= bbox.minY && y <= bbox.maxY;
+}
+
+function isPointInWraFeature(x, y, feature) {
+    for (const item of feature._polygons || []) {
+        if (!isPointInBBox(x, y, item.bbox)) continue;
+        if (isPointInPolygonRings(x, y, item.polygon)) return true;
+    }
+    return false;
+}
+
+function distancePointToWraFeatureMeters(x, y, feature) {
     let minDistance = Infinity;
-    for (const polygon of coordinates || []) {
-        for (const ring of polygon || []) {
-            minDistance = Math.min(minDistance, distancePointToRingMeters(x, y, ring));
-        }
+    for (const item of feature._rings || []) {
+        if (!isPointInBBox(x, y, item.proximityBBox)) continue;
+        minDistance = Math.min(minDistance, distancePointToRingMeters(x, y, item.ring));
     }
     return minDistance;
 }
@@ -801,10 +873,12 @@ function computeIntersections() {
                 const coordinates = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
                 if (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon') continue;
 
+                if (!isPointInBBox(x, y, feat._proximityBBox)) continue;
+
                 const depth = feat.properties.depth_type;
                 const gridCode = feat.properties.grid_code || getWraGridCodeFromDepth(depth);
 
-                if (isPointInMultiPolygon(x, y, coordinates)) {
+                if (isPointInBBox(x, y, feat._bbox) && isPointInWraFeature(x, y, feat)) {
                     daycareIntersectResults[getPointKey(feature, config)] = {
                         depth,
                         gridCode,
@@ -815,7 +889,7 @@ function computeIntersections() {
                     return;
                 }
 
-                const distanceMeters = distancePointToMultiPolygonMeters(x, y, coordinates);
+                const distanceMeters = distancePointToWraFeatureMeters(x, y, feat);
                 if (distanceMeters <= WRA_PROXIMITY_RADIUS_METERS && (!nearest || distanceMeters < nearest.distanceMeters)) {
                     nearest = { depth, gridCode, method: 'proximity', distanceMeters };
                 }
