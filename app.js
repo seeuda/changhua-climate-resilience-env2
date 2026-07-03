@@ -29,7 +29,7 @@ let selectedTown = null; // Filter daycare list
 let wraGeoJson350 = null;
 let wraGeoJson650 = null;
 let wraLayer = null;
-let daycareIntersectResults = {}; // daycare name -> depth_type
+let daycareIntersectResults = {}; // point key -> WRA direct/proximity flood risk result
 
 
 function isWraLayerEnabled() {
@@ -614,6 +614,75 @@ function isPointInMultiPolygon(x, y, coordinates) {
     return false;
 }
 
+const WRA_PROXIMITY_RADIUS_METERS = 100;
+
+function degreesToMetersDelta(dx, dy, latitude) {
+    const latMeters = dy * 111320;
+    const lngMeters = dx * 111320 * Math.cos(latitude * Math.PI / 180);
+    return { x: lngMeters, y: latMeters };
+}
+
+function distancePointToSegmentMeters(px, py, ax, ay, bx, by) {
+    const latitude = (py + ay + by) / 3;
+    const a = degreesToMetersDelta(ax - px, ay - py, latitude);
+    const b = degreesToMetersDelta(bx - px, by - py, latitude);
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const abLengthSquared = abx * abx + aby * aby;
+
+    if (abLengthSquared === 0) {
+        return Math.hypot(a.x, a.y);
+    }
+
+    const t = Math.max(0, Math.min(1, -(a.x * abx + a.y * aby) / abLengthSquared));
+    const closestX = a.x + t * abx;
+    const closestY = a.y + t * aby;
+    return Math.hypot(closestX, closestY);
+}
+
+function distancePointToRingMeters(x, y, ring) {
+    let minDistance = Infinity;
+    for (let i = 0; i < ring.length - 1; i++) {
+        const [ax, ay] = ring[i];
+        const [bx, by] = ring[i + 1];
+        minDistance = Math.min(minDistance, distancePointToSegmentMeters(x, y, ax, ay, bx, by));
+    }
+    return minDistance;
+}
+
+function distancePointToMultiPolygonMeters(x, y, coordinates) {
+    let minDistance = Infinity;
+    for (const polygon of coordinates || []) {
+        for (const ring of polygon || []) {
+            minDistance = Math.min(minDistance, distancePointToRingMeters(x, y, ring));
+        }
+    }
+    return minDistance;
+}
+
+function getWraGridCodeFromDepth(depth) {
+    if (depth === '0.3-0.5') return 2;
+    if (depth === '0.5-1') return 3;
+    if (depth === '1-2') return 4;
+    if (depth === '2-3') return 5;
+    if (depth === '>3') return 6;
+    return 2;
+}
+
+function getWraPointRisk(feature, config) {
+    return daycareIntersectResults[getPointKey(feature, config)] || null;
+}
+
+function getWraPointDepth(feature, config) {
+    return getWraPointRisk(feature, config)?.depth || '';
+}
+
+function formatWraRiskLabel(result) {
+    if (!result) return '';
+    if (result.method === 'direct') return `${result.depth} 公尺（直接套疊）`;
+    return `${result.depth} 公尺（鄰近 ${Math.round(result.distanceMeters)}m，加權 ${Math.round(result.weight * 100)}%）`;
+}
+
 function getConfigValue(config, key, fallback = null) {
     return config[key] || fallback;
 }
@@ -637,8 +706,36 @@ function getFeatureName(feature, config) {
     return getFeatureValue(feature.properties || {}, config.nameField) || '未命名點位';
 }
 
-function getFeatureTown(feature, config) {
+function getFeatureDeclaredTown(feature, config) {
     return getFeatureValue(feature.properties || {}, config.townField);
+}
+
+function getFeatureCoordinates(feature) {
+    return feature?.geometry?.type === 'Point' ? feature.geometry.coordinates : null;
+}
+
+function getFeatureSpatialTown(feature) {
+    const coords = getFeatureCoordinates(feature);
+    if (!coords || !townGeoJsonData) return '';
+
+    const [x, y] = coords;
+    for (const townFeature of townGeoJsonData.features || []) {
+        const geometry = townFeature.geometry;
+        if (!geometry) continue;
+
+        const coordinates = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+        if (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon') continue;
+
+        if (isPointInMultiPolygon(x, y, coordinates)) {
+            return townFeature.properties?.town_name || '';
+        }
+    }
+
+    return '';
+}
+
+function getFeatureTown(feature, config) {
+    return getFeatureSpatialTown(feature) || getFeatureDeclaredTown(feature, config);
 }
 
 function getPointKey(feature, config) {
@@ -658,6 +755,13 @@ function getTownRiskMap() {
 function getFeatureRisk(feature, config) {
     const town = getFeatureTown(feature, config);
     return getTownRiskMap()[town] || 1;
+}
+
+function getFeatureTownMismatch(feature, config) {
+    const declaredTown = getFeatureDeclaredTown(feature, config);
+    const spatialTown = getFeatureSpatialTown(feature);
+    if (!declaredTown || !spatialTown || declaredTown === spatialTown) return null;
+    return { declaredTown, spatialTown };
 }
 
 function filterPointDataset(dataset, config) {
@@ -684,14 +788,42 @@ function computeIntersections() {
     daycareIntersectResults = {};
     if (activeTheme === 'flood' && activeFloodLayers.wra && activeWraData) {
         getActivePointFeatures().forEach(({ config, feature }) => {
-            const coords = feature.geometry.coordinates;
-            const x = coords[0];
-            const y = coords[1];
-            for (let feat of activeWraData.features) {
-                if (isPointInMultiPolygon(x, y, feat.geometry.coordinates)) {
-                    daycareIntersectResults[getPointKey(feature, config)] = feat.properties.depth_type;
-                    break;
+            const coords = getFeatureCoordinates(feature);
+            if (!coords) return;
+
+            const [x, y] = coords;
+            let nearest = null;
+
+            for (const feat of activeWraData.features || []) {
+                const geometry = feat.geometry;
+                if (!geometry) continue;
+
+                const coordinates = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+                if (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon') continue;
+
+                const depth = feat.properties.depth_type;
+                const gridCode = feat.properties.grid_code || getWraGridCodeFromDepth(depth);
+
+                if (isPointInMultiPolygon(x, y, coordinates)) {
+                    daycareIntersectResults[getPointKey(feature, config)] = {
+                        depth,
+                        gridCode,
+                        method: 'direct',
+                        distanceMeters: 0,
+                        weight: 1
+                    };
+                    return;
                 }
+
+                const distanceMeters = distancePointToMultiPolygonMeters(x, y, coordinates);
+                if (distanceMeters <= WRA_PROXIMITY_RADIUS_METERS && (!nearest || distanceMeters < nearest.distanceMeters)) {
+                    nearest = { depth, gridCode, method: 'proximity', distanceMeters };
+                }
+            }
+
+            if (nearest) {
+                const weight = Math.max(0, 1 - (nearest.distanceMeters / WRA_PROXIMITY_RADIUS_METERS));
+                daycareIntersectResults[getPointKey(feature, config)] = { ...nearest, weight };
             }
         });
     }
@@ -818,7 +950,7 @@ function renderPointLayers() {
         pointLayers[config.id] = L.geoJSON(dataset, {
             pointToLayer: (feature, latlng) => {
                 const markerColor = getMarkerColor(feature, config);
-                const floodDepth = daycareIntersectResults[getPointKey(feature, config)];
+                const floodDepth = getWraPointDepth(feature, config);
                 const riskVal = getFeatureRisk(feature, config);
 
                 return createRiskOutlinedMarker(latlng, markerColor, riskVal, floodDepth);
@@ -889,22 +1021,29 @@ function onEachPointFeature(feature, layer, config) {
     const props = feature.properties;
 
     let warningHtml = '';
-    const warningDepth = daycareIntersectResults[getPointKey(feature, config)];
-    if (activeTheme === 'flood' && activeFloodLayers.wra && warningDepth) {
+    const wraRisk = getWraPointRisk(feature, config);
+    if (activeTheme === 'flood' && activeFloodLayers.wra && wraRisk) {
         warningHtml = `
             <div class="popup-row" style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 4px; padding: 4px 8px; margin-top: 4px; margin-bottom: 8px;">
-                <span class="popup-label" style="color: #ef4444; font-weight: bold;"><i class="fa-solid fa-triangle-exclamation"></i> 淹水警戒</span>
-                <span class="popup-val" style="color: #ef4444; font-weight: bold;">${warningDepth} 公尺</span>
+                <span class="popup-label" style="color: #ef4444; font-weight: bold;"><i class="fa-solid fa-triangle-exclamation"></i> ${wraRisk.method === 'direct' ? '淹水警戒' : '鄰近淹水潛勢'}</span>
+                <span class="popup-val" style="color: #ef4444; font-weight: bold;">${formatWraRiskLabel(wraRisk)}</span>
             </div>
         `;
     }
 
     const riskVal = getFeatureRisk(feature, config);
+    const resolvedTown = getFeatureTown(feature, config);
+    const townMismatch = getFeatureTownMismatch(feature, config);
     const riskHtml = `
+        <div class="popup-row">
+            <span class="popup-label">地理所屬鄉鎮</span>
+            <span class="popup-val">${resolvedTown || '無法判定'}</span>
+        </div>
         <div class="popup-row">
             <span class="popup-label">所處風險</span>
             <span class="popup-val risk-badge badge-${riskVal}">第 ${riskVal} 級</span>
         </div>
+        ${townMismatch ? `<div class="popup-row"><span class="popup-label">資料鄉鎮註記</span><span class="popup-val">${townMismatch.declaredTown}（依座標改以 ${townMismatch.spatialTown} 判定風險）</span></div>` : ''}
     `;
 
     const rowsHtml = (config.popupFields || []).map(fieldConfig => {
@@ -987,16 +1126,10 @@ function getWraDepthDistribution() {
     const depthDistribution = { 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
 
     getActivePointFeatures().forEach(({ config, feature }) => {
-        const depth = daycareIntersectResults[getPointKey(feature, config)];
-        if (depth) {
+        const risk = getWraPointRisk(feature, config);
+        if (risk) {
             totalFlooded++;
-            let code = 2;
-            if (depth === '0.3-0.5') code = 2;
-            else if (depth === '0.5-1') code = 3;
-            else if (depth === '1-2') code = 4;
-            else if (depth === '2-3') code = 5;
-            else if (depth === '>3') code = 6;
-            depthDistribution[code]++;
+            depthDistribution[risk.gridCode || getWraGridCodeFromDepth(risk.depth)]++;
         }
     });
 
@@ -1127,7 +1260,7 @@ function updateInfoWidget(props) {
 
     if (isWraLayerEnabled()) {
         const floodedCount = getActivePointFeatures().filter(({ config, feature }) =>
-            getFeatureTown(feature, config) === props.town_name && daycareIntersectResults[getPointKey(feature, config)]
+            getFeatureTown(feature, config) === props.town_name && getWraPointRisk(feature, config)
         ).length;
         infoDiv.innerHTML = `
             <div class="hover-town-title">${props.town_name}</div>
@@ -1225,9 +1358,9 @@ function populatePointList() {
         const props = feat.properties;
 
         let warningTag = '';
-        const isFlooded = daycareIntersectResults[getPointKey(feat, config)];
-        if (activeTheme === 'flood' && activeFloodLayers.wra && isFlooded) {
-            warningTag = `<span class="item-tag tag-warning"><i class="fa-solid fa-triangle-exclamation"></i> 淹水警戒: ${isFlooded}m</span>`;
+        const wraRisk = getWraPointRisk(feat, config);
+        if (activeTheme === 'flood' && activeFloodLayers.wra && wraRisk) {
+            warningTag = `<span class="item-tag tag-warning"><i class="fa-solid fa-triangle-exclamation"></i> ${wraRisk.method === 'direct' ? '淹水警戒' : '鄰近潛勢'}: ${formatWraRiskLabel(wraRisk)}</span>`;
         }
 
         const riskVal = getFeatureRisk(feat, config);
