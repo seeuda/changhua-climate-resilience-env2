@@ -1150,11 +1150,22 @@ function onEachPointFeature(feature, layer, config) {
 // ==========================================================================
 // Dashboard Widgets & Stats Updater
 // ==========================================================================
-// ==========================================================================
-// Dashboard Widgets & Stats Updater
-// ==========================================================================
+function updateTotalPointCard() {
+    const totalCard = document.querySelector('.total-centers');
+    if (!totalCard) return;
+
+    const totalLabel = totalCard.querySelector('.stat-label');
+    const totalValue = totalCard.querySelector('.stat-value');
+    const activeFeatures = getActivePointFeatures();
+
+    totalLabel.innerText = `目前顯示${getActivePointSummaryLabel()}`;
+    totalValue.innerText = activeFeatures.length;
+}
+
 function updateHighRiskCard(total, label) {
     const highRiskCard = document.querySelector('.high-risk-centers');
+    if (!highRiskCard) return;
+
     const highRiskLabel = highRiskCard.querySelector('.stat-label');
     const highRiskValue = highRiskCard.querySelector('.stat-value');
 
@@ -1215,6 +1226,7 @@ function updateStatsAndChart() {
 
     // Dynamically update the legend content
     updateLegendUI();
+    updateTotalPointCard();
 
     if (isNcdrLayerEnabled()) {
         // NCDR must remain the source for the Lv.4-5 warning card whenever
