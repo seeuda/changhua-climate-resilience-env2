@@ -824,9 +824,45 @@ function getTownRiskMap() {
     return townRisks;
 }
 
-function getFeatureRisk(feature, config) {
+
+function getNcdrFeatureRisk(feature, config) {
     const town = getFeatureTown(feature, config);
     return getTownRiskMap()[town] || 1;
+}
+
+function getWraFeatureRisk(feature, config) {
+    const wraRisk = getWraPointRisk(feature, config);
+    if (!wraRisk) return 1;
+
+    // WRA depth classes are stored as grid codes 2-6. For point-level risk display,
+    // normalize them to the same 1-5 scale used by township risks:
+    // no intersection = 1, 0.3-0.5m = 2, 0.5-1m = 3, 1-2m = 4, >=2m = 5.
+    const directLevel = Math.min(wraRisk.gridCode || getWraGridCodeFromDepth(wraRisk.depth), 5);
+    if (wraRisk.method === 'direct') return directLevel;
+
+    // Nearby-but-not-overlapping polygons should not be treated as full direct
+    // inundation. Keep the warning visible, but taper the risk level by distance
+    // within the 100m buffer so the rendered marker updates more realistically.
+    return Math.max(1, Math.round(1 + ((directLevel - 1) * (wraRisk.weight || 0))));
+}
+
+function getFeatureRiskAssessment(feature, config) {
+    const hasNcdr = isNcdrLayerEnabled();
+    const hasWra = isWraLayerEnabled();
+    const ncdrRisk = hasNcdr ? getNcdrFeatureRisk(feature, config) : null;
+    const wraRisk = hasWra ? getWraFeatureRisk(feature, config) : null;
+
+    if (hasNcdr && hasWra) {
+        const risk = Math.max(ncdrRisk || 1, wraRisk || 1);
+        return { risk, ncdrRisk, wraRisk, source: '綜合套疊', mode: 'combined' };
+    }
+
+    if (hasWra) return { risk: wraRisk || 1, ncdrRisk: null, wraRisk: wraRisk || 1, source: '水利署潛勢', mode: 'wra' };
+    return { risk: ncdrRisk || 1, ncdrRisk: ncdrRisk || 1, wraRisk: null, source: activeTheme === 'temp' ? '高溫風險' : '鄉鎮市潛勢', mode: 'ncdr' };
+}
+
+function getFeatureRisk(feature, config) {
+    return getFeatureRiskAssessment(feature, config).risk;
 }
 
 function getFeatureTownMismatch(feature, config) {
@@ -1105,7 +1141,8 @@ function onEachPointFeature(feature, layer, config) {
         `;
     }
 
-    const riskVal = getFeatureRisk(feature, config);
+    const riskAssessment = getFeatureRiskAssessment(feature, config);
+    const riskVal = riskAssessment.risk;
     const resolvedTown = getFeatureTown(feature, config);
     const townMismatch = getFeatureTownMismatch(feature, config);
     const riskHtml = `
@@ -1115,8 +1152,9 @@ function onEachPointFeature(feature, layer, config) {
         </div>
         <div class="popup-row">
             <span class="popup-label">所處風險</span>
-            <span class="popup-val risk-badge badge-${riskVal}">第 ${riskVal} 級</span>
+            <span class="popup-val risk-badge badge-${riskVal}">第 ${riskVal} 級（${riskAssessment.source}）</span>
         </div>
+        ${riskAssessment.mode === 'combined' ? `<div class="popup-row"><span class="popup-label">套疊明細</span><span class="popup-val">鄉鎮市第 ${riskAssessment.ncdrRisk} 級；水利署第 ${riskAssessment.wraRisk} 級，取較高者</span></div>` : ''}
         ${townMismatch ? `<div class="popup-row"><span class="popup-label">資料鄉鎮註記</span><span class="popup-val">${townMismatch.declaredTown}（依座標改以 ${townMismatch.spatialTown} 判定風險）</span></div>` : ''}
     `;
 
@@ -1182,20 +1220,11 @@ function updateHighRiskCard(total, label) {
 }
 
 function getRiskDistribution() {
-    const riskField = getActiveRiskField();
-    const townRisks = {};
-
-    townGeoJsonData.features.forEach(feat => {
-        const name = feat.properties.town_name;
-        townRisks[name] = feat.properties[riskField] || 1;
-    });
-
     let totalHighRisk = 0;
     const riskDistribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
 
     getActivePointFeatures().forEach(({ config, feature }) => {
-        const town = getFeatureTown(feature, config);
-        const riskVal = townRisks[town] || 1;
+        const riskVal = getFeatureRisk(feature, config);
 
         riskDistribution[riskVal]++;
         if (riskVal >= 4) {
@@ -1229,10 +1258,9 @@ function updateStatsAndChart() {
     updateTotalPointCard();
 
     if (isNcdrLayerEnabled()) {
-        // NCDR must remain the source for the Lv.4-5 warning card whenever
-        // the NCDR layer is visible, even when the WRA potential layer is also overlaid.
         const { totalHighRisk, riskDistribution } = getRiskDistribution();
-        updateHighRiskCard(totalHighRisk, `第 4-5 級警戒${getActivePointSummaryLabel()} (Lv.4-5)`);
+        const sourceLabel = isWraLayerEnabled() ? '綜合套疊' : '第 4-5 級';
+        updateHighRiskCard(totalHighRisk, `${sourceLabel}警戒${getActivePointSummaryLabel()} (Lv.4-5)`);
         renderChart(riskDistribution);
     } else if (isWraLayerEnabled()) {
         // WRA-only mode has no NCDR Lv.4-5 towns, so summarize flooded daycare sites by depth.
@@ -1476,7 +1504,7 @@ function populatePointList() {
         card.innerHTML = `
             <div class="daycare-item-title"><i class="fa-solid ${config.icon}"></i> ${getFeatureName(feat, config)}</div>
             <div class="daycare-item-tags">
-                <span class="item-tag tag-warning">風險 ${riskVal}</span>
+                <span class="item-tag tag-warning">風險 ${riskVal}｜${getFeatureRiskAssessment(feat, config).source}</span>
                 ${categoryTags}
                 ${warningTag}
             </div>
