@@ -170,6 +170,7 @@ const caseColors = {
 
 const AGGREGATE_POINT_LAYER_ID = 'envFacilities';
 const SPLIT_ENV_POINT_LAYER_IDS = ['envHq', 'envRecycling'];
+const POINT_LAYER_GROUP_ORDER = ['環保設施', '日照中心'];
 
 const POINT_REGISTRY = {
     daycare: {
@@ -178,7 +179,7 @@ const POINT_REGISTRY = {
         shortLabel: '日照',
         icon: 'fa-house-chimney-medical',
         file: 'daycare_points.json',
-        defaultVisible: true,
+        defaultVisible: false,
         idField: 'id',
         nameField: 'name',
         townField: 'town',
@@ -263,7 +264,7 @@ const POINT_REGISTRY = {
         shortLabel: '回收場',
         icon: 'fa-recycle',
         file: 'env_facilities.json',
-        defaultVisible: false,
+        defaultVisible: true,
         filterCategory: '資源回收場',
         idField: 'id',
         nameField: 'name',
@@ -1693,7 +1694,16 @@ function renderPointLayerSelector() {
         return acc;
     }, new Map());
 
-    selector.innerHTML = Array.from(groups.entries()).map(([groupLabel, configs]) => `
+    const orderedGroups = Array.from(groups.entries()).sort(([groupA], [groupB]) => {
+        const indexA = POINT_LAYER_GROUP_ORDER.indexOf(groupA);
+        const indexB = POINT_LAYER_GROUP_ORDER.indexOf(groupB);
+        if (indexA === -1 && indexB === -1) return 0;
+        if (indexA === -1) return 1;
+        if (indexB === -1) return -1;
+        return indexA - indexB;
+    });
+
+    selector.innerHTML = orderedGroups.map(([groupLabel, configs]) => `
         <div class="point-layer-group">
             <div class="point-layer-group-title">${groupLabel}</div>
             ${configs.map(config => {
