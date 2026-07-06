@@ -24,6 +24,7 @@ let activeWraScenario = 'gwl15'; // 'gwl15' = 350mm/24HR, 'gwl20' = 650mm/24HR
 let riskMapOpacity = 0.7;
 let activeTempRiskMode = 'mean'; // 'mean' or 'max'
 let selectedTown = null; // Filter daycare list
+let isCalibrationLocked = false;
 
 
 let wraGeoJson350 = null;
@@ -435,17 +436,61 @@ function loadData() {
 // ==========================================================================
 let activeWraData = null;
 
+function getCalibrationValues() {
+    return {
+        lonShift: parseFloat(document.getElementById('slider-lon-shift').value),
+        latShift: parseFloat(document.getElementById('slider-lat-shift').value),
+        scaleFactor: parseFloat(document.getElementById('slider-scale').value)
+    };
+}
+
+function formatSignedCalibrationValue(value) {
+    return `${value >= 0 ? '+' : ''}${value.toFixed(5)}`;
+}
+
+function formatCalibrationSummary(values = getCalibrationValues()) {
+    return `經度偏移 ${formatSignedCalibrationValue(values.lonShift)}、緯度偏移 ${formatSignedCalibrationValue(values.latShift)}、縮放比例 ${values.scaleFactor.toFixed(5)}`;
+}
+
+function updateCalibrationValueDisplays(values = getCalibrationValues()) {
+    document.getElementById('val-lon-shift').innerText = formatSignedCalibrationValue(values.lonShift);
+    document.getElementById('val-lat-shift').innerText = formatSignedCalibrationValue(values.latShift);
+    document.getElementById('val-scale').innerText = values.scaleFactor.toFixed(5);
+}
+
+function setCalibrationLocked(locked, showNotice = false) {
+    isCalibrationLocked = locked;
+
+    ['slider-lon-shift', 'slider-lat-shift', 'slider-scale'].forEach(id => {
+        const control = document.getElementById(id);
+        if (control) control.disabled = locked;
+    });
+
+    const lockButton = document.getElementById('btn-calibration-lock');
+    if (lockButton) {
+        lockButton.classList.toggle('active', locked);
+        lockButton.setAttribute('aria-pressed', String(locked));
+        lockButton.innerHTML = locked
+            ? '<i class="fa-solid fa-lock"></i> 已鎖定校正值'
+            : '<i class="fa-solid fa-lock-open"></i> 鎖定校正值';
+    }
+
+    const notice = document.getElementById('calibration-lock-notice');
+    if (notice) {
+        notice.hidden = !locked && !showNotice;
+        notice.textContent = locked
+            ? `你本次進行圖層偏移校正，設定值為：${formatCalibrationSummary()}。下次重新載入時可設定相同的偏移校正參數。`
+            : '';
+    }
+}
+
 function applyCalibration() {
     if (!originalTownGeoJson) return;
 
-    const lonShift = parseFloat(document.getElementById('slider-lon-shift').value);
-    const latShift = parseFloat(document.getElementById('slider-lat-shift').value);
-    const scaleFactor = parseFloat(document.getElementById('slider-scale').value);
+    const { lonShift, latShift, scaleFactor } = getCalibrationValues();
 
     // Update UI value displays
-    document.getElementById('val-lon-shift').innerText = (lonShift >= 0 ? '+' : '') + lonShift.toFixed(5);
-    document.getElementById('val-lat-shift').innerText = (latShift >= 0 ? '+' : '') + latShift.toFixed(5);
-    document.getElementById('val-scale').innerText = scaleFactor.toFixed(5);
+    updateCalibrationValueDisplays({ lonShift, latShift, scaleFactor });
 
     // Deep copy original data
     townGeoJsonData = JSON.parse(JSON.stringify(originalTownGeoJson));
@@ -477,28 +522,18 @@ function applyCalibration() {
         }
     });
 
-    // Transform WRA GeoJSON if active and loaded
+    // Keep business point datasets and WRA flood-potential layers in their original
+    // coordinates. The developer calibration tool is only for township boundaries
+    // so point-to-town overlay checks can validate the corrected district borders
+    // without moving business points along with them.
     activeWraData = null;
     if (isWraLayerEnabled()) {
         const originalWra = getActiveWraScenario() === 'gwl20' ? wraGeoJson650 : wraGeoJson350;
         if (originalWra) {
             activeWraData = JSON.parse(JSON.stringify(originalWra));
-            activeWraData.features.forEach(f => {
-                if (f.geometry && f.geometry.coordinates) {
-                    transformCoords(f.geometry.coordinates, lonShift, latShift, scaleFactor);
-                }
-            });
             annotateWraFeatureBBoxes(activeWraData);
         }
     }
-
-    Object.values(pointDatasets).forEach(dataset => {
-        dataset.features.forEach(f => {
-            if (f.geometry && f.geometry.coordinates) {
-                transformCoords(f.geometry.coordinates, lonShift, latShift, scaleFactor);
-            }
-        });
-    });
 
     // Re-render layers and statistics
     updateLayers();
@@ -1878,6 +1913,14 @@ function setupUIControls() {
     lonSlider.addEventListener('input', applyCalibration);
     latSlider.addEventListener('input', applyCalibration);
     scaleSlider.addEventListener('input', applyCalibration);
+
+    const lockButton = document.getElementById('btn-calibration-lock');
+    if (lockButton) {
+        lockButton.addEventListener('click', () => {
+            setCalibrationLocked(!isCalibrationLocked, true);
+        });
+    }
+    setCalibrationLocked(false);
 
     // 6. Mobile Sidebar Drawer Toggle
     const brand = document.querySelector('.brand');
