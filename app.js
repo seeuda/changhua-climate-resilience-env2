@@ -17,8 +17,8 @@ let originalPointDatasets = {};
 let pointDatasets = {};
 let activePointLayerIds = new Set();
 
-let activeTheme = 'flood'; // 'flood' or 'temp'
-let activeScenario = 'current'; // 'current', 'gwl15', 'gwl20', 'gwl40'
+let activeTheme = 'temp'; // 'flood' or 'temp'
+let activeScenario = 'gwl40'; // 'current', 'gwl15', 'gwl20', 'gwl40'
 let activeFloodLayers = { ncdr: true, wra: false }; // flood overlays can be combined
 let activeWraScenario = 'gwl15'; // 'gwl15' = 350mm/24HR, 'gwl20' = 650mm/24HR
 let riskMapOpacity = 0.7;

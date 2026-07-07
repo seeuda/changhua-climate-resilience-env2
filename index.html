@@ -109,16 +109,16 @@
                 <div class="control-group">
                     <label class="group-label">分析主題</label>
                     <div class="toggle-buttons" id="theme-selector">
-                        <button class="toggle-btn active" data-theme="flood">
+                        <button class="toggle-btn" data-theme="flood">
                             <i class="fa-solid fa-cloud-showers-heavy"></i> 淹水災害
                         </button>
-                        <button class="toggle-btn" data-theme="temp">
+                        <button class="toggle-btn active" data-theme="temp">
                             <i class="fa-solid fa-temperature-arrow-up"></i> 高溫風險
                         </button>
                     </div>
                 </div>
 
-                <div class="control-group" id="flood-mode-group">
+                <div class="control-group" id="flood-mode-group" style="display: none;">
                     <label class="group-label">淹水圖資套疊（可複選）</label>
                     <div class="toggle-buttons" id="flood-mode-selector">
                         <button class="toggle-btn active" data-mode="ncdr">
@@ -130,7 +130,7 @@
                     </div>
                 </div>
 
-                <div class="control-group" id="temp-mode-group" style="display: none;">
+                <div class="control-group" id="temp-mode-group">
                     <label class="group-label">高溫風險計算模式</label>
                     <div class="toggle-buttons" id="temp-mode-selector">
                         <button class="toggle-btn active" data-mode="mean">
@@ -150,7 +150,7 @@
 
                 <div class="control-group" id="risk-opacity-group">
                     <label class="group-label opacity-control-label" for="slider-risk-opacity">
-                        <span id="risk-opacity-label">NCDR 風險圖透明度</span>
+                        <span id="risk-opacity-label">高溫風險圖透明度</span>
                         <span id="val-risk-opacity">70%</span>
                     </label>
                     <input type="range" id="slider-risk-opacity" class="control-range" min="0.1" max="1" step="0.05" value="0.7" aria-label="風險圖透明度">
@@ -160,13 +160,13 @@
                     <label class="group-label">氣候情境時間軸</label>
                     <div class="timeline" id="scenario-selector">
                         <div class="timeline-track"></div>
-                        <div class="timeline-step active" data-scenario="current" style="left: 0%;">
+                        <div class="timeline-step" data-scenario="current" style="left: 0%;">
                             <span class="step-dot"></span>
                             <span class="step-label">現況基準(Baseline) </span>
                         </div>
-                        <div class="timeline-step" data-scenario="future" style="left: 100%;">
+                        <div class="timeline-step active" data-scenario="gwl40" style="left: 100%;">
                             <span class="step-dot"></span>
-                            <span class="step-label">世紀末升溫 1.5°C 情境</span>
+                            <span class="step-label">升溫 4.0°C 情境</span>
                         </div>
                     </div>
                 </div>
@@ -242,7 +242,7 @@
             <header class="map-overlay-header">
                 <div class="header-pill">
                     <span class="indicator-dot active"></span>
-                    <span class="header-title" id="active-scenario-indicator">淹水風險等級套疊 - 現況基準</span>
+                    <span class="header-title" id="active-scenario-indicator">高溫風險等級套疊 - 升溫 4.0°C 情境推估</span>
                 </div>
             </header>
         </main>
